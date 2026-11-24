@@ -1,6 +1,8 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 
 from .database import engine, Base, SessionLocal
@@ -45,7 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
+# Register API routers
 app.include_router(dashboard.router)
 app.include_router(analyze.router)
 app.include_router(reports.router)
@@ -54,16 +56,36 @@ app.include_router(graph.router)
 app.include_router(chat.router)
 app.include_router(safety.router)
 
-@app.get("/")
-def root():
-    return {
-        "name": "OfferGraph Intelligence API",
-        "version": "1.0.0",
-        "status": "operational",
-        "docs_url": "/docs",
-        "tagline": "Don't just detect suspicious offers. Connect the evidence."
-    }
-
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "service": "OfferGraph API"}
+
+# Unified deployment support: serve frontend static build if available
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "frontend", "dist")
+if not os.path.exists(frontend_dist):
+    frontend_dist = os.path.join(os.getcwd(), "frontend", "dist")
+
+if os.path.exists(frontend_dist):
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path.startswith("api") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        
+        file_path = os.path.join(frontend_dist, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
+else:
+    @app.get("/")
+    def root():
+        return {
+            "name": "OfferGraph Intelligence API",
+            "version": "1.0.0",
+            "status": "operational",
+            "docs_url": "/docs",
+            "tagline": "Don't just detect suspicious offers. Connect the evidence."
+        }
