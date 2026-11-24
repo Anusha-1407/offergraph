@@ -1,8 +1,10 @@
 import os
-from fastapi import FastAPI, HTTPException
+import time
+from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 
 from .database import engine, Base, SessionLocal
@@ -16,6 +18,11 @@ from .routers import (
     chat,
     safety
 )
+
+# High-performance in-memory sliding window rate limiter
+_RATE_LIMITS = defaultdict(list)
+RATE_LIMIT_WINDOW = 60 # seconds
+MAX_REQUESTS_PER_WINDOW = 120 # requests per minute per client IP
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +41,34 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Security Headers & Rate Limiting Middleware
+@app.middleware("http")
+async def security_and_rate_limit_middleware(request: Request, call_next):
+    # Rate limit check for /api endpoints
+    if request.url.path.startswith("/api/"):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        requests_history = _RATE_LIMITS[client_ip]
+        # Purge entries older than window
+        _RATE_LIMITS[client_ip] = [t for t in requests_history if now - t < RATE_LIMIT_WINDOW]
+        if len(_RATE_LIMITS[client_ip]) >= MAX_REQUESTS_PER_WINDOW:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Rate limit exceeded (120 req/min). Please try again later."}
+            )
+        _RATE_LIMITS[client_ip].append(now)
+
+    response: Response = await call_next(request)
+
+    # Industry-standard HTTP Security Headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    return response
 
 # CORS configuration
 origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173")

@@ -1,17 +1,84 @@
 import os
 import json
+import logging
 from typing import Dict, Any, List, Optional
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger("offergraph.ai")
 
+# AI API Credentials
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+GOOGLE_SAFE_BROWSING_API_KEY = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "").strip()
 
 class AIService:
     @staticmethod
+    def get_active_provider() -> str:
+        """Determines the active AI intelligence provider."""
+        if GEMINI_API_KEY and len(GEMINI_API_KEY) > 10 and not GEMINI_API_KEY.startswith("your_"):
+            return "google-gemini"
+        elif OPENAI_API_KEY and len(OPENAI_API_KEY) > 10 and not OPENAI_API_KEY.startswith("your_"):
+            return "openai"
+        return "deterministic-demo"
+
+    @staticmethod
     def is_live_available() -> bool:
-        return bool(OPENAI_API_KEY and len(OPENAI_API_KEY) > 10 and not OPENAI_API_KEY.startswith("your_"))
+        return AIService.get_active_provider() in ["google-gemini", "openai"]
+
+    @staticmethod
+    def check_google_web_risk(domain: str) -> Dict[str, Any]:
+        """
+        Queries Google Safe Browsing / Web Risk API to check if a domain is flagged
+        for Social Engineering / Phishing / Malware.
+        Falls back to local heuristic detection if API key is not configured.
+        """
+        if not domain:
+            return {"status": "clean", "threat_types": []}
+
+        # Live Google Safe Browsing lookup if key is configured
+        if GOOGLE_SAFE_BROWSING_API_KEY:
+            try:
+                url = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GOOGLE_SAFE_BROWSING_API_KEY}"
+                payload = {
+                    "client": {"clientId": "offergraph", "clientVersion": "1.0.0"},
+                    "threatInfo": {
+                        "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"],
+                        "platformTypes": ["ANY_PLATFORM"],
+                        "threatEntryTypes": ["URL"],
+                        "threatEntries": [{"url": f"http://{domain}/"}]
+                    }
+                }
+                with httpx.Client(timeout=4.0) as client:
+                    resp = client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        matches = resp.json().get("matches", [])
+                        if matches:
+                            threat_types = list(set([m.get("threatType") for m in matches]))
+                            return {
+                                "status": "flagged",
+                                "threat_types": threat_types,
+                                "source": "Google Safe Browsing v4"
+                            }
+            except Exception as e:
+                logger.warning(f"Google Safe Browsing API check failed: {e}")
+
+        # Local heuristic reputation for suspicious TLDs & fake lookalikes
+        suspicious_tlds = [".xyz", ".top", ".site", ".online", ".club", ".space", ".buzz", ".work"]
+        is_suspicious_tld = any(domain.endswith(tld) for tld in suspicious_tlds)
+        is_recruitment_lure = any(w in domain for w in ["career", "job", "hiring", "recruit", "desk", "verify", "offer"])
+
+        if is_suspicious_tld and is_recruitment_lure:
+            return {
+                "status": "flagged",
+                "threat_types": ["SUSPICIOUS_RECRUITMENT_DOMAIN"],
+                "source": "OfferGraph Domain Reputation Heuristics"
+            }
+
+        return {"status": "clean", "threat_types": []}
 
     @staticmethod
     def generate_offer_explanation(
@@ -24,32 +91,58 @@ class AIService:
     ) -> Dict[str, Any]:
         """
         Generates an explainable risk assessment summary and safety advisory.
-        Uses OpenAI GPT if key is set, otherwise generates high-fidelity deterministic mock analysis.
+        Uses Google Gemini API if GEMINI_API_KEY is configured,
+        or OpenAI if OPENAI_API_KEY is configured,
+        otherwise generates deterministic forensic explanation.
         """
-        if AIService.is_live_available():
+        provider = AIService.get_active_provider()
+
+        prompt = f"""You are the OfferGraph Forensic Cyber Analyst.
+Analyze this recruitment communication:
+Target Entity: {company_name}
+Calculated Risk: {risk_score}/100 ({risk_category})
+Detected Threat Indicators: {json.dumps(indicators)}
+Database Incident Matches: {len(matched_reports)} prior incident(s) correlated
+
+Original Communication Excerpt:
+\"\"\"{text[:1500]}\"\"\"
+
+Provide an objective forensic report in clear markdown:
+### Executive Threat Summary
+### Forensic Red Flags (referencing exact clauses)
+### Syndicate Network Correlation
+### Recommended Verification Protocol
+
+Tone: Formal cybersecurity intelligence report. Never declare absolute guilt without qualification; highlight high-confidence risk vectors."""
+
+        # 1. Google Gemini Provider
+        if provider == "google-gemini":
+            try:
+                gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+                payload = {
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 750}
+                }
+                with httpx.Client(timeout=8.0) as client:
+                    resp = client.post(gemini_url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["candidates"][0]["content"]["parts"][0]["text"]
+                        return {
+                            "explanation": content,
+                            "ai_mode": "live",
+                            "model": f"Google Gemini ({GEMINI_MODEL})"
+                        }
+                    else:
+                        logger.error(f"Gemini API returned status {resp.status_code}: {resp.text}")
+            except Exception as e:
+                logger.error(f"Google Gemini generation failed: {e}")
+
+        # 2. OpenAI Provider
+        elif provider == "openai":
             try:
                 from openai import OpenAI
                 client = OpenAI(api_key=OPENAI_API_KEY)
-
-                prompt = f"""
-You are the OfferGraph AI Forensic Analyst.
-Analyze the following job/internship communication:
-Company: {company_name}
-Risk Score: {risk_score}/100 ({risk_category})
-Detected Indicators: {json.dumps(indicators)}
-Prior Matching Database Incidents: {len(matched_reports)} incidents found
-
-Original Message Text:
-\"\"\"{text[:1500]}\"\"\"
-
-Provide a professional, objective forensic breakdown in markdown:
-1. Executive Risk Summary
-2. Forensic Red Flags (referencing exact clauses)
-3. Shared Pattern Correlation (noting database linkages)
-4. Recommended Immediate Verification Steps
-
-Rules: Maintain an objective cybersecurity analyst tone. Do not assert absolute fraud without qualification; treat indicators as critical risk flags.
-"""
                 response = client.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=[
@@ -63,17 +156,15 @@ Rules: Maintain an objective cybersecurity analyst tone. Do not assert absolute 
                 return {
                     "explanation": explanation,
                     "ai_mode": "live",
-                    "model": OPENAI_MODEL
+                    "model": f"OpenAI ({OPENAI_MODEL})"
                 }
             except Exception as e:
-                # Fall back gracefully with clear labelling if API call fails
-                mock = AIService._generate_deterministic_explanation(company_name, risk_score, risk_category, indicators, matched_reports)
-                mock["explanation"] = f"*[Note: Live OpenAI call encountered: {str(e)[:60]}... Switched to Deterministic Demo Engine]*\n\n" + mock["explanation"]
-                mock["ai_mode"] = "demo"
-                return mock
+                logger.error(f"OpenAI generation failed: {e}")
 
-        # Deterministic Demo Mode
-        return AIService._generate_deterministic_explanation(company_name, risk_score, risk_category, indicators, matched_reports)
+        # 3. Deterministic Forensic Demo Fallback
+        return AIService._generate_deterministic_explanation(
+            company_name, risk_score, risk_category, indicators, matched_reports
+        )
 
     @staticmethod
     def _generate_deterministic_explanation(
@@ -89,21 +180,21 @@ Rules: Maintain an objective cybersecurity analyst tone. Do not assert absolute 
         has_domain = any("DOMAIN" in ind.get("code", "") for ind in indicators)
         matches_count = len(matched_reports)
 
-        points_text = f"**Overall Assessment:** The analyzed communication for **{company_name or 'the stated employer'}** exhibits a calculated risk score of **{int(risk_score)}/100** categorized as **{risk_category}**.\n\n"
+        points_text = f"**Executive Threat Summary:** The analyzed communication for **{company_name or 'the stated employer'}** exhibits a calculated risk score of **{int(risk_score)}/100** categorized as **{risk_category}**.\n\n"
 
         flags_text = "### Forensic Red Flags Detected:\n"
         if has_payment or has_deposit:
-            flags_text += "- **Monetary Demand Detected:** Legitimate employers and corporate internship programs never require registration, documentation, or equipment deposits upfront. Section 66D of the IT Act and standard corporate recruitment policies strictly forbid onboarding charges.\n"
+            flags_text += "- **Monetary Demand Detected:** Legitimate employers and corporate internship programs never require registration, documentation, or equipment deposits upfront. Section 66D of the Information Technology Act and corporate hiring codes strictly prohibit onboarding charges.\n"
         if has_domain:
-            flags_text += "- **Suspicious Recruiter Domain:** The recruiter is communicating via an unofficial, free, or disposable email service rather than an authenticated enterprise domain with valid SPF/DKIM records.\n"
+            flags_text += "- **Suspicious Recruiter Domain:** The sender is communicating via an unauthenticated, disposable, or free webmail service rather than an authenticated enterprise domain with valid SPF/DKIM/DMARC DNS records.\n"
         if has_urgency:
-            flags_text += "- **High-Pressure Coercion:** An artificial time limit was imposed to induce rapid compliance before the candidate can independently corroborate credentials.\n"
+            flags_text += "- **High-Pressure Coercion:** An artificial deadline was imposed to induce rapid compliance before the candidate can independently corroborate credentials.\n"
         if not (has_payment or has_deposit or has_domain or has_urgency):
-            flags_text += "- **Standard Pattern:** No severe payment coercion detected, but exercise standard vigilance regarding company registration and official contract terms.\n"
+            flags_text += "- **Standard Pattern:** No severe payment coercion detected; maintain standard verification on company identity and employment contracts.\n"
 
         corr_text = "\n### Fraud Intelligence Correlation:\n"
         if matches_count > 0:
-            corr_text += f"- **Database Match Alert:** OfferGraph cross-referenced extracted identifiers (phone number, UPI ID, or domain) and matched **{matches_count} previously reported suspicious incident(s)** in the shared intelligence repository. This strongly indicates a recurring recruitment lure syndicate.\n"
+            corr_text += f"- **Database Match Alert:** OfferGraph cross-referenced extracted identifiers (phone number, UPI ID, or domain) and matched **{matches_count} previously reported suspicious incident(s)** in the shared intelligence repository. This provides high-confidence evidence of a recurring recruitment lure syndicate.\n"
         else:
             corr_text += "- **Zero Historical Matches:** No identical identifier has been previously flagged in this local node. However, behavioral scoring remains the primary risk indicator.\n"
 

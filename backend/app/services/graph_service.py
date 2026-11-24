@@ -1,9 +1,22 @@
+import time
 import networkx as nx
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from ..models import Report, Entity, ReportEntity
 from .extraction_service import mask_phone, mask_email, mask_upi
+
+# In-memory graph cache to boost efficiency and response latency
+_GRAPH_CACHE: Dict[str, Any] = {
+    "data": None,
+    "timestamp": 0.0,
+    "ttl_seconds": 45.0
+}
+
+def invalidate_graph_cache():
+    """Invalidates the in-memory graph cache when reports or entities change."""
+    _GRAPH_CACHE["data"] = None
+    _GRAPH_CACHE["timestamp"] = 0.0
 
 class GraphService:
     @staticmethod
@@ -70,11 +83,16 @@ class GraphService:
     def get_cytoscape_elements(db: Session, filter_report_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Exports graph data in Cytoscape.js compatible JSON format.
+        Caches full graph representation in memory for high efficiency.
         """
+        now = time.time()
+        # Serve from cache if no filter and within TTL
+        if filter_report_id is None and _GRAPH_CACHE["data"] and (now - _GRAPH_CACHE["timestamp"]) < _GRAPH_CACHE["ttl_seconds"]:
+            return _GRAPH_CACHE["data"]
+
         G = GraphService.build_networkx_graph(db)
 
         if filter_report_id:
-            # Filter graph to subgraph of nodes connected to this report
             target = f"report_{filter_report_id}"
             if target in G:
                 neighbors = set(nx.single_source_shortest_path_length(G, target, cutoff=2).keys())
@@ -130,7 +148,7 @@ class GraphService:
                 }
             })
 
-        return {
+        result = {
             "elements": {
                 "nodes": nodes,
                 "edges": edges
@@ -142,6 +160,13 @@ class GraphService:
             }
         }
 
+        # Cache only unfiltered full graph queries
+        if filter_report_id is None:
+            _GRAPH_CACHE["data"] = result
+            _GRAPH_CACHE["timestamp"] = now
+
+        return result
+
     @staticmethod
     def get_entity_investigation_details(db: Session, entity_id: int) -> Dict[str, Any]:
         """
@@ -151,7 +176,6 @@ class GraphService:
         if not entity:
             return {"error": "Entity not found"}
 
-        # Find all linked reports
         links = db.query(ReportEntity).filter(ReportEntity.entity_id == entity_id).all()
         report_ids = [l.report_id for l in links]
 

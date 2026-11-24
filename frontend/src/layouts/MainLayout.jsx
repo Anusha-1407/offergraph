@@ -93,7 +93,9 @@ export default function MainLayout() {
 
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-navy-800 transition"
+            aria-label={collapsed ? 'Expand sidebar navigation' : 'Collapse sidebar navigation'}
+            aria-expanded={!collapsed}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-navy-800 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? <ChevronRight className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
@@ -101,7 +103,7 @@ export default function MainLayout() {
         </div>
 
         {/* Navigation Items */}
-        <nav className="flex-1 overflow-y-auto p-3 space-y-1.5">
+        <nav aria-label="Main Navigation" className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path;
@@ -109,7 +111,8 @@ export default function MainLayout() {
               <NavLink
                 key={item.path}
                 to={item.path}
-                className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
+                aria-label={item.label}
+                className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
                   isActive
                     ? 'bg-gradient-to-r from-cyan-500/15 to-indigo-500/10 text-cyan-300 border border-cyan-500/30 shadow-sm'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-navy-800/60'
@@ -221,7 +224,13 @@ export default function MainLayout() {
         </header>
 
         {/* Scrollable Page Body */}
-        <main className="flex-1 overflow-y-auto bg-navy-950 p-6">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          role="main"
+          aria-label="Main content workspace"
+          className="flex-1 overflow-y-auto bg-navy-950 p-6 focus:outline-none"
+        >
           <Outlet />
         </main>
       </div>

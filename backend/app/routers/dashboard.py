@@ -110,5 +110,7 @@ def get_recent_reports(limit: int = 6, db: Session = Depends(get_db)):
 @router.post("/reset-demo-data")
 def reset_demo_data(db: Session = Depends(get_db)):
     from ..seed import seed_database
+    from ..services.graph_service import invalidate_graph_cache
     seed_database(db, force_reset=True)
+    invalidate_graph_cache()
     return {"message": "Database reset to synthetic demonstration data successfully.", "status": "ok"}

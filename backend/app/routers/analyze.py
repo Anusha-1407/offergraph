@@ -16,11 +16,40 @@ from ..services.ai_service import AIService
 
 router = APIRouter(prefix="/api/analyze", tags=["Analyze"])
 
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024 # 5 MB
+MAX_TEXT_LENGTH = 30000
+
+def sanitize_text(text: str) -> str:
+    """Strips dangerous script tags and null bytes from input."""
+    if not text:
+        return ""
+    cleaned = text.replace("\x00", "")
+    # Basic tag strip for script/iframe
+    import re
+    cleaned = re.sub(r'<\s*(script|iframe|style|object|embed)[^>]*>.*?<\s*/\s*\1\s*>', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
+    return cleaned
+
 def extract_text_from_file(file: UploadFile) -> str:
+    # 1. File extension validation
+    filename = (file.filename or "upload.txt").lower()
+    if not (filename.endswith(".pdf") or filename.endswith(".txt")):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format. Only .pdf and .txt offer letters are accepted for forensic analysis."
+        )
+
+    # 2. File size enforcement
     content = file.file.read()
-    filename = file.filename.lower() if file.filename else "upload.txt"
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds maximum allowed size of 5MB (Received {len(content) / (1024 * 1024):.2f}MB)."
+        )
 
     if filename.endswith(".pdf"):
+        # Validate PDF magic header
+        if not content.startswith(b"%PDF"):
+            raise HTTPException(status_code=400, detail="Corrupted or invalid PDF header structure.")
         try:
             import fitz # PyMuPDF
             doc = fitz.open(stream=content, filetype="pdf")
@@ -30,7 +59,6 @@ def extract_text_from_file(file: UploadFile) -> str:
             doc.close()
             return "\n".join(extracted_text)
         except Exception as e:
-            # Fallback to pypdf if pymupdf has an issue
             try:
                 import pypdf
                 reader = pypdf.PdfReader(io.BytesIO(content))
@@ -39,14 +67,13 @@ def extract_text_from_file(file: UploadFile) -> str:
             except Exception as e2:
                 raise HTTPException(status_code=400, detail=f"Failed to extract text from PDF: {str(e2)}")
     else:
-        # Default text decode
         try:
             return content.decode("utf-8")
         except UnicodeDecodeError:
             return content.decode("latin-1")
 
 @router.post("", response_model=AnalysisResponse)
-async def analyze_offer(
+def analyze_offer(
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
@@ -59,9 +86,11 @@ async def analyze_offer(
     else:
         raise HTTPException(status_code=400, detail="Please provide either text or a file to analyze.")
 
-    analyzed_text = analyzed_text.strip()
+    analyzed_text = sanitize_text(analyzed_text.strip())
     if len(analyzed_text) < 15:
         raise HTTPException(status_code=400, detail="The input text is too short to perform a forensic analysis.")
+    if len(analyzed_text) > MAX_TEXT_LENGTH:
+        analyzed_text = analyzed_text[:MAX_TEXT_LENGTH]
 
     # Step 3: Extract structured entities
     extracted = ExtractionService.extract_all(analyzed_text)
@@ -142,13 +171,28 @@ async def analyze_offer(
             evidence_snippet=f"Matches {len(matched_reports)} prior incident reports."
         ))
 
+    # Google Safe Browsing / Web Risk check on extracted domains
+    for dom in extracted.get("domains", []):
+        web_risk = AIService.check_google_web_risk(dom)
+        if web_risk["status"] == "flagged":
+            risk_score = min(100.0, risk_score + 15.0)
+            if risk_score >= 60.0:
+                risk_category = "High Risk"
+            indicators.append(RiskIndicator(
+                code="GOOGLE_WEB_RISK_FLAG",
+                title=f"Flagged Domain Reputation ({dom})",
+                points=15,
+                description=f"Domain flagged for potential deceptive recruitment lure by {web_risk.get('source', 'Google Web Risk service')}.",
+                evidence_snippet=f"Threat types: {', '.join(web_risk.get('threat_types', ['POTENTIALLY_HARMFUL']))}"
+            ))
+
     # Step 8: Generate AI explanation
     ai_result = AIService.generate_offer_explanation(
         analyzed_text,
         extracted["company_name"] or "Unspecified Entity",
         risk_score,
         risk_category,
-        [ind.dict() for ind in indicators],
+        [ind.model_dump() for ind in indicators],
         matched_reports
     )
 
@@ -201,6 +245,6 @@ def get_analysis_by_id(analysis_id: int, db: Session = Depends(get_db)):
         "risk_score": rec.risk_score,
         "risk_category": rec.risk_category,
         "extracted_entities": extracted,
-        "suspicious_indicators": [ind.dict() for ind in indicators],
+        "suspicious_indicators": [ind.model_dump() for ind in indicators],
         "created_at": rec.created_at.strftime("%Y-%m-%d %H:%M") if rec.created_at else "N/A"
     }

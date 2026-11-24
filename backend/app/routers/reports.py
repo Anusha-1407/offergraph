@@ -11,6 +11,7 @@ from ..services.extraction_service import (
     mask_phone, mask_email, mask_upi, ExtractionService
 )
 from ..services.risk_engine import RiskEngine
+from ..services.graph_service import invalidate_graph_cache
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
@@ -111,6 +112,7 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
         db.add(ReportEntity(report_id=new_report.id, entity_id=u_entity.id, relationship_type="CONTAINS_UPI"))
 
     db.commit()
+    invalidate_graph_cache()
     db.refresh(new_report)
 
     return {

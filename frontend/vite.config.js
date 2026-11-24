@@ -11,5 +11,18 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  build: {
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          cytoscape: ['cytoscape'],
+          charts: ['recharts'],
+          icons: ['lucide-react']
+        }
+      }
+    }
   }
 })

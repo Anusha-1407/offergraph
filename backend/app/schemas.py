@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import datetime
 
 # Entity schemas
@@ -12,9 +12,7 @@ class EntityResponse(EntityBase):
     id: int
     created_at: datetime.datetime
     report_count: Optional[int] = 0
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Report schemas
 class ReportCreate(BaseModel):
@@ -41,9 +39,7 @@ class ReportResponse(BaseModel):
     verification_status: str
     created_at: datetime.datetime
     connected_entities: Optional[List[Dict[str, Any]]] = []
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Analysis schemas
 class AnalysisRequest(BaseModel):

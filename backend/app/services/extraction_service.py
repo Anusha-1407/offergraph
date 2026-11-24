@@ -96,7 +96,7 @@ class ExtractionService:
         matches = re.findall(pattern, text)
         cleaned = []
         for m in matches:
-            norm = normalize_email(m)
+            norm = normalize_email(m).rstrip(".,;:!?)")
             # exclude generic file extensions or invalid domains
             if not any(norm.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif']):
                 if norm not in cleaned:
